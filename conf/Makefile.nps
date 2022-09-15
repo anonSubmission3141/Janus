@@ -49,6 +49,7 @@ CFLAGS += $(DEBUG_FLAGS)
 CFLAGS += $(CSTANDARD)
 CFLAGS += $(shell pkg-config --cflags-only-I ivy-glib)
 CFLAGS += -D_GNU_SOURCE
+CFLAGS += -g -pg -fdump-rtl-expand -fdump-tree-cfg-graph
 
 CXXSTANDARD ?= -std=c++0x
 CXXFLAGS  = $(WARN_FLAGS)
@@ -61,6 +62,7 @@ CXXFLAGS += $(DEBUG_FLAGS)
 CXXFLAGS += $(CXXSTANDARD)
 CXXFLAGS += $(shell pkg-config --cflags-only-I ivy-glib)
 CXXFLAGS += -D_GNU_SOURCE
+CXXFLAGS += -g -pg -fdump-rtl-expand -fdump-tree-cfg-graph
 
 LDFLAGS	+= $($(TARGET).LDFLAGS)
 LDFLAGS += $(BOARD_LDFLAGS)

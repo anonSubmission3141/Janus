@@ -57,3 +57,32 @@ void nav_goto_block(uint8_t b)
   nav_block = b;
   nav_init_block();
 }
+
+int8_t past_adaptation_index = 0;
+int8_t active_adaptation = 0;
+int8_t active_adaptation_stage = 0;
+uint8_t past_adaptations[100];
+uint8_t past_adaptations_stages[100];
+
+void preempt_adaptation(int future)
+{
+   past_adaptations[past_adaptation_index] = active_adaptation;
+   past_adaptations_stages[past_adaptation_index] = active_adaptation_stage;
+   past_adaptation_index++;
+   active_adaptation = future;
+}
+
+void end_adaptation()
+{
+   if (past_adaptation_index > 0) {
+      active_adaptation = past_adaptations[past_adaptation_index];
+      active_adaptation_stage = past_adaptations_stages[past_adaptation_index];
+      past_adaptations[past_adaptation_index] = -1;
+      past_adaptations_stages[past_adaptation_index] = -1;
+      past_adaptation_index--;
+   } else {
+      active_adaptation = 0;
+      active_adaptation_stage = 0;
+   }
+}
+

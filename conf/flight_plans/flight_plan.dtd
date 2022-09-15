@@ -27,13 +27,14 @@
 
 <!ELEMENT exceptions (exception*)>
 
-<!ELEMENT blocks (block+)>
-<!ELEMENT block (exception|while|heading|attitude|manual|go|xyz|set|call|call_once|circle|deroute|stay|follow|survey_rectangle|for|return|eight|oval|home|path)*>
+<!ELEMENT blocks (block|adaptation)+>
+<!ELEMENT block (adaptation|exception|while|heading|attitude|manual|go|xyz|set|call|call_once|circle|deroute|stay|follow|survey_rectangle|for|return|eight|oval|home|path)*>
 
 <!ELEMENT include (arg|with)*>
 <!ELEMENT arg EMPTY>
 <!ELEMENT with EMPTY>
 
+<!ELEMENT adaptation (exception|while|heading|attitude|manual|go|xyz|set|call|call_once|circle|deroute|stay|follow|survey_rectangle|for|return|eight|oval|path)*>
 <!ELEMENT while (exception|while|heading|attitude|manual|go|xyz|set|call|call_once|circle|deroute|stay|follow|survey_rectangle|for|return|eight|oval|path)*>
 <!ELEMENT for (exception|while|heading|attitude|manual|go|xyz|set|call|call_once|circle|deroute|stay|follow|survey_rectangle|for|return|eight|oval|path)*>
 <!ELEMENT exception EMPTY>
@@ -56,7 +57,6 @@
 <!ELEMENT param EMPTY>
 <!ELEMENT return EMPTY>
 <!ELEMENT path EMPTY>
-
 
 <!ATTLIST flight_plan
 name CDATA #REQUIRED
@@ -87,6 +87,14 @@ alt CDATA #IMPLIED
 height CDATA #IMPLIED>
 
 <!ATTLIST exceptions>
+
+<!ATTLIST adaptation
+name CDATA #REQUIRED
+guard CDATA #REQUIRED
+value CDATA #IMPLIED
+var CDATA #IMPLIED
+min CDATA #IMPLIED
+max CDATA #IMPLIED>
 
 <!ATTLIST sectors>
 
@@ -146,7 +154,8 @@ strip_button CDATA #IMPLIED
 strip_icon CDATA #IMPLIED
 group CDATA #IMPLIED
 key CDATA #IMPLIED
-description CDATA #IMPLIED>
+description CDATA #IMPLIED
+adaptations CDATA #IMPLIED>
 
 <!ATTLIST exception
 cond CDATA #REQUIRED

@@ -219,6 +219,10 @@ let home_block = Xml.parse_string "<block name=\"HOME\"><home/></block>"
 
 let stage = ref 0
 
+let adaptation_key = ref 0
+
+let adaptation_stage = ref 0
+
 let output_label out l = lprintf out "Label(%s)\n" l
 
 let get_index_waypoint = fun x l ->
@@ -342,7 +346,7 @@ let rec index_stage = fun x ->
       | "survey_rectangle" | "eight" | "oval"->
         incr stage; incr stage;
         Xml.Element (Xml.tag x, Xml.attribs x@["no", soi !stage], Xml.children x)
-      | "exception" ->
+      | "exception" | "adapation" ->
         x
       | s -> failwith (sprintf "Unknown stage: %s\n" s)
   end
@@ -367,6 +371,18 @@ let stage_until = fun out x ->
     right ();
     fp_post_call out x;
     lprintf out "NextStageAndBreak()\n";
+    left ();
+    lprintf out "}\n"
+  with ExtXml.Error _ -> () (* fallback when "until" attribute doesn't exist *)
+
+(* test until condition test if any, post_call before leaving *)
+let adaptation_stage_until = fun out x ->
+  try
+    let cond = parsed_attrib x "until" in
+    lprintf out "if (%s) {\n" cond;
+    right ();
+    fp_post_call out x;
+    lprintf out "NextAdaptationStageAndBreak()\n";
     left ();
     lprintf out "}\n"
   with ExtXml.Error _ -> () (* fallback when "until" attribute doesn't exist *)
@@ -675,7 +691,7 @@ let indexed_stages = fun blocks ->
           if (ExtXml.tag_is stage "for" || ExtXml.tag_is stage "while") then
             List.iter f (Xml.children stage)
         with Xml.No_attribute "no" ->
-          assert (ExtXml.tag_is stage "exception")
+          assert (ExtXml.tag_is stage "exception" || ExtXml.tag_is stage "adaptation")
       in
       List.iter f (Xml.children b))
     blocks;
@@ -698,38 +714,505 @@ let index_blocks = fun xml ->
       (Xml.children xml) in
   Xml.Element (Xml.tag xml, Xml.attribs xml, indexed_blocks)
 
+let uniq lst =
+  let unique_set = Hashtbl.create (List.length lst) in
+  List.iter (fun x -> Hashtbl.replace unique_set x ()) lst;
+  Hashtbl.fold (fun x () xs -> x :: xs) unique_set []
+  
+let rec last = function
+  | x::[] -> x
+  | _::xs -> last xs
+  | []    -> failwith "no element"
+
+(* test until condition test if any, post_call before leaving *)
+let adaptation_stage_until = fun out x ->
+  try
+    let cond = parsed_attrib x "until" in
+    lprintf out "if (%s) {\n" cond;
+    right ();
+    fp_post_call out x;
+    lprintf out "NextAdaptationStageAndBreak()\n";
+    left ();
+    lprintf out "}\n"
+  with ExtXml.Error _ -> () (* fallback when "until" attribute doesn't exist *)
+
+let rec print_adaptation_stage = fun out index_of_waypoints x ->
+  let stage out = incr adaptation_stage; lprintf out "AdaptationStage(%d)\n" !adaptation_stage; right (); in
+  begin
+    match String.lowercase_ascii (Xml.tag x) with
+      | "return" ->
+        stage out;
+        lprintf out "Return(%s);\n" (ExtXml.attrib_or_default x "reset_stage" "0");
+        lprintf out "break;\n"
+      | "goto" ->
+        stage out;
+        lprintf out "Goto(%s)\n" (name_of x)
+      | "deroute" ->
+        stage out;
+        lprintf out "GotoBlock(%d);\n" (get_index_block (ExtXml.attrib x "block"));
+        lprintf out "break;\n"
+      | "exit_block" ->
+        lprintf out "/* Falls through. */\n";
+        lprintf out "default:\n";
+        stage out;
+        lprintf out "NextBlock();\n";
+        lprintf out "break;\n"
+      | "while" ->
+        let w = gen_label "while" in
+        let e = gen_label "endwhile" in
+        output_label out w;
+        stage out;
+        let c = try parsed_attrib x "cond" with _ -> "TRUE" in
+        lprintf out "if (! (%s)) Goto(%s) else NextAdaptationStageAndBreak();\n" c e;
+        List.iter (print_adaptation_stage out index_of_waypoints) (Xml.children x);
+        print_adaptation_stage out index_of_waypoints (goto w);
+        output_label out e
+      | "for" ->
+        let f = gen_label "for" in
+        let e = gen_label "endfor" in
+        let v = Expr_syntax.c_var_of_ident (ExtXml.attrib x "var")
+        and from_ = parsed_attrib x "from"
+        and to_expr = parsed_attrib x "to"  in
+        let to_var = v ^ "_to" in
+        lprintf out "static int8_t %s;\n" v;
+        lprintf out "static int8_t %s;\n" to_var;
+
+        (* init *)
+        stage out;
+        lprintf out "%s = %s - 1;\n" v from_;
+        lprintf out "%s = %s;\n" to_var to_expr;
+        lprintf out "INTENTIONAL_FALLTHRU\n";
+        left ();
+
+        output_label out f;
+        stage out;
+        lprintf out "if (++%s > %s) Goto(%s) else NextAdaptationStageAndBreak();\n" v to_var e;
+        List.iter (print_adaptation_stage out index_of_waypoints) (Xml.children x);
+        print_adaptation_stage out index_of_waypoints (goto f);
+        output_label out e
+      | "heading" ->
+        stage out;
+        fp_pre_call out x;
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        lprintf out "%sHeading(RadOfDeg(%s)%s);\n" t (parsed_attrib x "course") p;
+        ignore (output_vmode out x "" "");
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "follow" ->
+        stage out;
+        fp_pre_call out x;
+        let id = ExtXml.attrib x "ac_id"
+        and d = ExtXml.attrib x "distance"
+        and h = ExtXml.attrib x "height" in
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        lprintf out "%sFollow(%s, %s, %s%s);\n" t id d h p;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "attitude" ->
+        stage out;
+        fp_pre_call out x;
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        lprintf out "%sAttitude(RadOfDeg(%s)%s);\n" t (parsed_attrib x "roll") p;
+        ignore (output_vmode out x "" "");
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "manual" ->
+        stage out;
+        fp_pre_call out x;
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        lprintf out "%sSetManual(%s, %s, %s%s);\n" t (parsed_attrib x "roll") (parsed_attrib x "pitch") (parsed_attrib x "yaw") p;
+        ignore (output_vmode out x "" "");
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "go" ->
+        stage out;
+        fp_pre_call out x;
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let wp =
+          try
+            get_index_waypoint (ExtXml.attrib x "wp") index_of_waypoints
+          with
+              ExtXml.Error _ ->
+                lprintf out "waypoints[0].x = %s;\n" (parsed_attrib x "x");
+                lprintf out "waypoints[0].y = %s;\n" (parsed_attrib x "y");
+                "0"
+        in
+        let at = try Some (ExtXml.attrib x "approaching_time") with _ -> None in
+        let et = try Some (ExtXml.attrib x "exceeding_time") with _ -> None in
+        let at = match at, et with
+          | Some a, None -> a
+          | None, Some e -> "-"^e
+          | None, None -> "CARROT"
+          | _, _ -> failwith "Error: 'approaching_time' and 'exceeding_time' attributes are not compatible"
+        in
+        let last_wp =
+          try
+            get_index_waypoint (ExtXml.attrib x "from") index_of_waypoints
+          with ExtXml.Error _ -> "last_wp" in
+        if last_wp = "last_wp" then
+          lprintf out "if (%sApproaching(%s,%s)) {\n" t wp at
+        else
+          lprintf out "if (%sApproachingFrom(%s,%s,%s)) {\n" t wp last_wp at;
+        right ();
+        fp_post_call out x;
+        lprintf out "NextAdaptationStageAndBreakFrom(%s);\n" wp;
+        left ();
+        lprintf out "} else {\n";
+        right ();
+        let hmode = output_hmode out x wp last_wp in
+        let vmode = output_vmode out x wp last_wp in
+        if vmode = "glide" && hmode <> "route" then
+          failwith "glide vmode requires route hmode";
+        left (); lprintf out "}\n";
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "stay" ->
+        stage out;
+        fp_pre_call out x;
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        begin
+          try
+            let wp = get_index_waypoint (ExtXml.attrib x "wp") index_of_waypoints in
+            ignore (output_hmode out x wp "");
+            ignore (output_vmode out x wp "");
+          with
+              Xml2h.Error _ ->
+                lprintf out "%sGotoXY(last_x, last_y%s);\n" t p;
+                ignore(output_vmode out x "" "")
+        end;
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "xyz" ->
+        stage out;
+        fp_pre_call out x;
+        let r = try parsed_attrib x "radius" with _ -> "100" in
+        lprintf out "Goto3D(%s)\n" r;
+        let x = ExtXml.subst_attrib "vmode" "xyz" x in
+        ignore (output_vmode out x "" ""); (** To handle "pitch" *)
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "home" ->
+        stage out;
+        lprintf out "nav_home();\n";
+        lprintf out "break;\n"
+      | "circle" ->
+        stage out;
+        fp_pre_call out x;
+        let wp = get_index_waypoint (ExtXml.attrib x "wp") index_of_waypoints in
+        let r = parsed_attrib  x "radius" in
+        let _vmode = output_vmode out x wp "" in
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        lprintf out "%sCircleWaypoint(%s, %s%s);\n" t wp r p;
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "eight" ->
+        stage out;
+        lprintf out "nav_eight_init();\n";
+        lprintf out "NextAdaptationStageAndBreak();\n";
+        left ();
+        stage out;
+        fp_pre_call out x;
+        let center = get_index_waypoint (ExtXml.attrib x "center") index_of_waypoints
+        and turn_about = get_index_waypoint (ExtXml.attrib x "turn_around") index_of_waypoints in
+        let r = parsed_attrib x "radius" in
+        let _vmode = output_vmode out x center "" in
+        lprintf out "Eight(%s, %s, %s);\n" center turn_about r;
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "oval" ->
+        stage out;
+        lprintf out "nav_oval_init();\n";
+        lprintf out "NextAdaptationStageAndBreak();\n";
+        left ();
+        stage out;
+        fp_pre_call out x;
+        let p1 = get_index_waypoint (ExtXml.attrib x "p1") index_of_waypoints
+        and p2 = get_index_waypoint (ExtXml.attrib x "p2") index_of_waypoints in
+        let r = parsed_attrib  x "radius" in
+        let _vmode = output_vmode out x p1 "" in
+        lprintf out "Oval(%s, %s, %s);\n" p1 p2 r;
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | "set" ->
+        stage out;
+        let var = ExtXml.attrib  x "var"
+        and value = parsed_attrib  x "value" in
+        lprintf out "%s = %s;\n" var value;
+        lprintf out "NextAdaptationStage();\n"
+      | "call" ->
+        stage out;
+        let statement = ExtXml.attrib  x "fun" in
+        (* by default, function is called while returning TRUE *)
+        (* otherwise, function is called once and returned value is ignored *)
+        let loop = String.uppercase_ascii (ExtXml.attrib_or_default x "loop" "TRUE") in
+        (* be default, go to next stage immediately *)
+        let break = String.uppercase_ascii (ExtXml.attrib_or_default x "break" "FALSE") in
+        begin match loop with
+        | "TRUE" ->
+            lprintf out "if (! (%s)) {\n" statement;
+            begin match break with
+            | "TRUE" -> lprintf out "  NextAdaptationStageAndBreak();\n";
+            | "FALSE" -> lprintf out "  NextAdaptationStage();\n";
+            | _ -> failwith "FP: 'call' break attribute must be TRUE or FALSE";
+            end;
+            lprintf out "} else {\n";
+            begin
+              try
+                let c = parsed_attrib x "until" in
+                lprintf out "if (%s) NextAdaptationStageAndBreak();\n" c
+              with
+                  ExtXml.Error _ -> ()
+            end;
+            lprintf out "break;\n";
+            lprintf out "}\n"
+        | "FALSE" ->
+            lprintf out "%s;\n" statement;
+            begin match break with
+            | "TRUE" -> lprintf out "NextAdaptationStageAndBreak();\n";
+            | "FALSE" -> lprintf out "NextAdaptationStage();\n";
+            | _ -> failwith "FP: 'call' break attribute must be TRUE or FALSE";
+            end;
+        | _ -> failwith "FP: 'call' loop attribute must be TRUE or FALSE"
+        end
+      | "call_once" ->
+        (* call_once is an alias for <call fun="x" loop="false"/> *)
+        stage out;
+        let statement = ExtXml.attrib  x "fun" in
+        (* by default, go to next stage immediately *)
+        let break = String.uppercase_ascii (ExtXml.attrib_or_default x "break" "FALSE") in
+        lprintf out "%s;\n" statement;
+        begin match break with
+        | "TRUE" -> lprintf out "NextAdaptationStageAndBreak();\n";
+        | "FALSE" -> lprintf out "NextAdaptationStage();\n";
+        | _ -> failwith "FP: 'call_once' break attribute must be TRUE or FALSE";
+        end;
+      | "survey_rectangle" ->
+        let grid = parsed_attrib x "grid"
+        and wp1 = get_index_waypoint (ExtXml.attrib x "wp1") index_of_waypoints
+        and wp2 = get_index_waypoint (ExtXml.attrib x "wp2") index_of_waypoints
+        and orientation = ExtXml.attrib_or_default x "orientation" "NS" in
+        let t = ExtXml.attrib_or_default x "nav_type" "Nav" in
+        let p = try ", " ^ (Xml.attrib x "nav_params") with _ -> "" in
+        stage out;
+        if orientation <> "NS" && orientation <> "WE" then
+          failwith (sprintf "Unknown survey orientation (NS or WE): %s" orientation);
+        lprintf out "%sSurveyRectangleInit(%s, %s, %s, %s%s);\n" t wp1 wp2 grid orientation p;
+        lprintf out "NextAdaptationStageAndBreak();\n";
+        left ();
+        stage out;
+        fp_pre_call out x;
+        lprintf out "%sSurveyRectangle(%s, %s);\n" t wp1 wp2;
+        adaptation_stage_until out x;
+        fp_post_call out x;
+        lprintf out "break;\n"
+      | _s -> failwith (Xml.tag x)
+  end;
+  left ()
 
 
-let print_block = fun out index_of_waypoints (b:Xml.xml) block_num ->
+let print_adaptation_block_preemption = fun out preempt_adapt_name (b:Xml.xml) ->
+  lprintf out "if (%s) {\n" (ExtXml.attrib b "guard");
+  right();
+  lprintf out "preempt_adaptation(%s_key);\n" preempt_adapt_name;
+  lprintf out "return;\n";
+  left();
+  lprintf out "}\n"
+
+let print_adaptation_block_preemptions = fun (b:Xml.xml) out adaptation_preemption_order local_global_adaptations preemption ->
+  let s = String.concat (ExtXml.attrib b "name") ["";"<[a-zA-Z]+"] in
+  let preempt_adapt_name_list = Str.split (Str.regexp "<") preemption in
+  let preempt_adapt_name = last preempt_adapt_name_list in
+  let adaptation = List.find (fun x -> compare (ExtXml.attrib x "name") preempt_adapt_name == 0) local_global_adaptations in
+  if (Str.string_match (Str.regexp s) preemption 0) then (print_adaptation_block_preemption out preempt_adapt_name adaptation)
+
+let print_adaptation_block_body = fun (b:Xml.xml) out adaptation_preemption_order local_global_adaptations index_of_waypoints->
+  (*let preemptions = Str.split (Str.regexp ",") adaptation_preemption_order in
+  List.iter (print_adaptation_block_preemptions b out adaptation_preemption_order local_global_adaptations) preemptions;*)
+  lprintf out "if (active_adaptation == 0) block_time=0;\n";
+  lprintf out "active_adaptation = %s_key;\n" (ExtXml.attrib b "name");
+  lprintf out "switch (active_adaptation_stage) {\n";
+  right ();
+  adaptation_stage := (-1);
+  List.iter (print_adaptation_stage out index_of_waypoints) (Xml.children b);
+  lprintf out "default : end_adaptation(); return;\n";
+  left ();
+  lprintf out "}\n";
+  lprintf out "return;\n";
+  left()
+
+let print_adaptation_block = fun out index_of_waypoints (b:Xml.xml) block_num local_global_adaptations adaptation_preemption_order adaptation_name->
+  let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in
+  lprintf out "if (%s && (active_adaptation == 0 || active_adaptation == %s_key)) {\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "name");
+  right();
+  print_adaptation_block_body block_elem out adaptation_preemption_order local_global_adaptations index_of_waypoints;
+  lprintf out "} else if (!(%s) && (active_adaptation == %s_key)) end_adaptation();\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "name")
+
+let print_adaptation_variable_body = fun out local_global_adaptations adaptation_name->
+  let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in    
+  if (compare  (ExtXml.attrib block_elem "value") "waypoint_set_here()" = 0) then
+    lprintf out "if (%s) waypoint_set_here(%s);\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var")
+  else
+    lprintf out "if (%s) %s = %s;\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "value")
+
+let print_adaptation_variable_max = fun out local_global_adaptations adaptation_name->
+  let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in    
+  try
+    lprintf out "if (%s && %s > %s) %s = %s;\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "max") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "max")
+  with
+    ExtXml.Error _ -> lprintf out ""
+
+let print_adaptation_variable_min = fun out local_global_adaptations adaptation_name->
+  let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in    
+  try
+    lprintf out "if (%s && %s < %s) %s = %s;\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "min") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "min")
+  with
+    ExtXml.Error _ -> lprintf out ""
+
+let print_adaptation_variable = fun out local_global_adaptations adaptation_name->
+  print_adaptation_variable_body out local_global_adaptations adaptation_name;
+  print_adaptation_variable_max out local_global_adaptations adaptation_name;
+  print_adaptation_variable_min out local_global_adaptations adaptation_name
+
+
+let is_adaptation_name_var = fun local_global_adaptative_variables name ->
+  let res, _ = List.partition (fun x -> compare (ExtXml.attrib x "name") name = 0) local_global_adaptative_variables in
+  match res with
+    | [] -> false;
+    | _ -> true
+
+let has_var_attrib = fun (adaptation:Xml.xml) ->
+  try
+    match (ExtXml.attrib adaptation "var") with
+    | "" -> false;
+    | _ -> true;
+  with
+    ExtXml.Error _ -> false
+
+let print_adaptations_variables = fun out index_of_waypoints (b:Xml.xml) block_num local_global_adaptations ->
+  let local_global_adaptative_variables,_ = List.partition (fun x -> has_var_attrib x) (local_global_adaptations) in
+  let adaptations =  ExtXml.attrib b "adaptations" in
+  let adaptations = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptations in
+  let adaptations_names_dup = Str.split (Str.regexp "\\(,\\|<\\)") adaptations in
+  let adaptations_names = uniq adaptations_names_dup in
+  let adaptive_var_names, _ = List.partition(fun x -> is_adaptation_name_var local_global_adaptative_variables x) adaptations_names in
+  List.iter (print_adaptation_variable out local_global_adaptative_variables) adaptive_var_names
+  
+let assert_partial_order = fun adaptations_order ->
+    let preemptions = List.find_all(fun i -> String.contains i '<')  adaptations_order in
+    List.iter (printf "%s ") preemptions
+
+
+let is_adaptation_name_block = fun local_global_adaptative_blocks name ->
+  let res, _ = List.partition (fun x -> compare (ExtXml.attrib x "name") name = 0) local_global_adaptative_blocks in
+  match res with
+    | [] -> false;
+    | _ -> true
+   
+let print_adaptations_blocks = fun out index_of_waypoints (b:Xml.xml) block_num local_global_adaptations ->
+  let local_global_adaptative_blocks,_ = List.partition (fun x -> not (has_var_attrib x)) (local_global_adaptations) in
+  let adaptations =  ExtXml.attrib b "adaptations" in
+  let adaptation_preemption_order =  ExtXml.attrib b "adaptations" in
+  let adaptation_preemption_order = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptation_preemption_order in
+  let adaptations = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptations in
+  let adaptations_names_dup = Str.split (Str.regexp "\\(,\\|<\\)") adaptations in
+  let adaptations_names = uniq adaptations_names_dup in
+  let adaptive_block_names, _ = List.partition(fun x -> is_adaptation_name_block local_global_adaptative_blocks x) adaptations_names in
+  List.iter (print_adaptation_block out index_of_waypoints b block_num local_global_adaptative_blocks adaptation_preemption_order) adaptive_block_names
+  (*try
+    let local_global_adaptative_blocks,_ = List.partition (fun x -> (try match (ExtXml.attrib x "var") with "" -> true | _ -> false  with ExtXml.Error _ -> true)) (local_global_adaptations) in
+    let adaptation_preemption_order =  ExtXml.attrib b "adaptations" in
+    let adaptation_preemption_order = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptation_preemption_order in
+    let adaptations_blocks_names_dup = Str.split (Str.regexp "\\(,\\|<\\)") adaptation_preemption_order in
+    let adaptations_blocks_names = uniq adaptations_blocks_names_dup in
+    (*let local_global_adaptations_blocks,_ = List.partition (fun x -> Xml.tag x = "adaptive_block") (local_global_adaptations) in*)
+    let local_global_adaptations_variables, local_global_adaptations_blocks = List.partition (fun x -> (match (ExtXml.attrib x "var") with "" -> false | _ -> true)) (local_global_adaptations) in
+    List.iter (print_adaptation_block out index_of_waypoints b block_num local_global_adaptations_blocks adaptation_preemption_order) adaptations_blocks_names;
+  with
+    ExtXml.Error _ -> ()*)
+
+
+let print_adaptation_key = fun out adaptation ->
+  incr adaptation_key;
+  lprintf out "int %s_key = %d;\n" (ExtXml.attrib adaptation "name") !adaptation_key
+
+let print_adaptations_keys = fun out local_global_adaptations ->
+  adaptation_key := (0);
+  List.iter (print_adaptation_key out) local_global_adaptations
+
+let print_block = fun out index_of_waypoints (b:Xml.xml) block_num global_adaptations ->
   let n = name_of b in
+
   (* Block entry *)
   lprintf out "Block(%d) // %s\n" block_num n;
   fp_pre_call out b;
 
-  let excpts, stages =
-    List.partition (fun x -> Xml.tag x = "exception") (Xml.children b) in
+  let excpts, _ =
+    List.partition (fun x -> Xml.tag x = "exception") (Xml.children b)
+  and local_adaptations, _ = 
+    List.partition (fun x -> (Xml.tag x = "adaption")) (Xml.children b)
+  and stages, _ = 
+    List.partition (fun x -> ((String.equal (Xml.tag x) "adaption" = false) && (String.equal (Xml.tag x) "exception" = false))) (Xml.children b) in
 
   List.iter (print_exception out) excpts;
 
-  lprintf out "switch(nav_stage) {\n";
-  right ();
-  stage := (-1);
-  List.iter (print_stage out index_of_waypoints) stages;
+  try
+    let adaptation_preemption_order =  ExtXml.attrib b "adaptations" in
+    let local_global_adaptations = List.append local_adaptations global_adaptations in
 
-  print_stage out index_of_waypoints exit_block;
+    print_adaptations_keys out local_global_adaptations;
 
-  left ();
-  lprintf out "}\n";
+    print_adaptations_variables out index_of_waypoints b block_num local_global_adaptations;
 
-  (* Block exit *)
-  fp_post_call out b;
-  lprintf out "break;\n\n"
+    print_adaptations_blocks out index_of_waypoints b block_num local_global_adaptations;
+    
+    lprintf out "switch(nav_stage) {\n";
+    right ();
+    stage := (-1);
+    List.iter (print_stage out index_of_waypoints) stages;
+
+    print_stage out index_of_waypoints exit_block;
+
+    left ();
+    lprintf out "}\n";
+
+    (* Block exit *)
+    fp_post_call out b;
+    lprintf out "break;\n\n"
+  with 
+    ExtXml.Error _ -> 
+      lprintf out "switch(nav_stage) {\n";
+      right ();
+      stage := (-1);
+      List.iter (print_stage out index_of_waypoints) stages;
+
+      print_stage out index_of_waypoints exit_block;
+
+      left ();
+      lprintf out "}\n";
+
+      (* Block exit *)
+      fp_post_call out b;
+      lprintf out "break;\n\n"
 
 
 
-let print_blocks = fun out index_of_waypoints bs ->
+let print_blocks = fun out index_of_waypoints bs global_adaptations->
   let block = ref (-1) in
-  List.iter (fun b -> incr block; print_block out index_of_waypoints b !block) bs
+  List.iter (fun b -> incr block; print_block out index_of_waypoints b !block global_adaptations) bs
 
 let c_suffix =
   let r = Str.regexp "^[a-zA-Z0-9_]*$" in
@@ -929,7 +1412,7 @@ let print_flight_plan_h = fun xml ref0 xml_file out_file ->
 
   let waypoints = Xml.children (ExtXml.child xml "waypoints")
   and variables = try Xml.children (ExtXml.child xml "variables") with _ -> []
-  and blocks = Xml.children (ExtXml.child xml "blocks")
+  and blocks, global_adaptations = List.partition (fun x -> Xml.tag x = "block") (Xml.children (ExtXml.child xml "blocks"))
   and global_exceptions = try Xml.children (ExtXml.child xml "exceptions") with _ -> [] in
 
   let h_name = "FLIGHT_PLAN_H" in
@@ -1107,6 +1590,7 @@ let print_flight_plan_h = fun xml ref0 xml_file out_file ->
     with
         _ -> ()
   end;
+
   lprintf out "\n#endif\n"; (* workaround to hide sector functions on FBW side *)
 
   (* start "C" part *)
@@ -1123,7 +1607,7 @@ let print_flight_plan_h = fun xml ref0 xml_file out_file ->
   List.iter (print_exception out) global_exceptions;
   lprintf out "switch (nav_block) {\n";
   right ();
-  print_blocks out index_of_waypoints blocks;
+  print_blocks out index_of_waypoints blocks global_adaptations;
   lprintf out "default: break;\n";
   left ();
   lprintf out "}\n";
