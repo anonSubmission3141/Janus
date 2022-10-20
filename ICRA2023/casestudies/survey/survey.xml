@@ -1,0 +1,33 @@
+<!DOCTYPE flight_plan SYSTEM "flight_plan.dtd">
+<flight_plan alt="260" ground_alt="185" lat0="43.46223" lon0="1.27289" max_dist_from_home="10000" name="Basic" security_height="25">
+  <waypoints>
+    <waypoint name="HOME" x="0" y="0"/>
+    <waypoint name="CLIMB" x="0" y="200"/>
+  </waypoints>
+  <variables>
+    <variable var="course" init="0"/>
+  </variables>
+  <blocks>
+    <block name="Takeoff">
+      <call_once fun="NavKillThrottle()"/>
+      <while cond="!GpsFixValid()"/>
+      <call_once fun="NavSetGroundReferenceHere()"/>
+      <while cond="LessThan(NavBlockTime(), 10)"/>
+      <call_once fun="NavResurrect()"/>
+      <stay vmode="climb" climb="0.5" wp="HOME"/>
+    </block>
+      <adaptation name="TopTurn" guard="GetPosY() > 75">
+        <attitude roll="-90" vmode="climb" climb="0" until="block_time > 3"/>
+        <set value="180" var="course"/>
+        <heading vmode="climb" climb="0" course="course" until="false"/>
+      </adaptation>
+      <adaptation name="BottomTurn" guard="GetPosY() < -75">
+        <attitude roll="90" vmode="climb" climb="0" until="block_time > 3"/>
+        <set value="0" var="course"/>
+        <heading vmode="climb" climb="0" course="course" until="false"/>
+      </adaptation>
+    <block name="SurveyRectangle" adaptations="TopTurn < BottomTurn">
+      <heading vmode="climb" climb="0" course="course" until="false"/>
+    </block>
+  </blocks>
+</flight_plan>

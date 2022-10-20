@@ -1,0 +1,25 @@
+<!DOCTYPE flight_plan SYSTEM "flight_plan.dtd">
+<flight_plan alt="260" ground_alt="185" lat0="43.46223" lon0="1.27289" max_dist_from_home="10000" name="Basic" security_height="25">
+  <waypoints>
+    <waypoint name="HOME" x="0" y="0"/>
+    <waypoint name="p1" x="-50" y="100"/>
+    <waypoint name="p2" x="-50" y="-100"/>
+    <waypoint name="person" x="-45" y="15"/>
+  </waypoints>
+  <blocks>
+    <block name="Takeoff">
+      <call_once fun="NavKillThrottle()"/>
+      <while cond="!GpsFixValid()"/>
+      <call_once fun="NavSetGroundReferenceHere()"/>
+      <while cond="LessThan(NavBlockTime(), 10)"/>
+      <call_once fun="NavResurrect()"/>
+      <stay vmode="climb" climb="0.5" wp="HOME"/>
+    </block>
+<adaptation name="avoidPerson" guard="waypoint_distance_xy(WP_person) @LT 25">
+  <circle radius="30" wp="person" until="NavCircleCount() @LT 0.45"/>
+</adaptation>
+<block  name="humanAvoidPath" adaptations="avoidPerson">
+  <path wpts="p1, p2"/>
+</block>
+  </blocks>
+</flight_plan>

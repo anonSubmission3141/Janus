@@ -1023,9 +1023,12 @@ let rec print_adaptation_stage = fun out index_of_waypoints x ->
   end;
   left ()
 
+let replace input output =
+    Str.global_replace (Str.regexp_string input) output;;
 
 let print_adaptation_block_preemption = fun out preempt_adapt_name (b:Xml.xml) ->
-  lprintf out "if (%s) {\n" (ExtXml.attrib b "guard");
+  let guard_str = Str.global_replace (Str.regexp "@LT") " < " (ExtXml.attrib b "guard") in
+  lprintf out "if (%s) {\n" guard_str;
   right();
   lprintf out "preempt_adaptation(%s_key);\n" preempt_adapt_name;
   lprintf out "return;\n";
@@ -1056,29 +1059,33 @@ let print_adaptation_block_body = fun (b:Xml.xml) out adaptation_preemption_orde
 
 let print_adaptation_block = fun out index_of_waypoints (b:Xml.xml) block_num local_global_adaptations adaptation_preemption_order adaptation_name->
   let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in
-  lprintf out "if (%s && (active_adaptation == 0 || active_adaptation == %s_key)) {\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "name");
+  let guard_str = Str.global_replace (Str.regexp "@LT") " < " (ExtXml.attrib block_elem "guard") in
+  lprintf out "if (%s && (active_adaptation == 0 || active_adaptation == %s_key)) {\n" guard_str (ExtXml.attrib block_elem "name");
   right();
   print_adaptation_block_body block_elem out adaptation_preemption_order local_global_adaptations index_of_waypoints;
-  lprintf out "} else if (!(%s) && (active_adaptation == %s_key)) end_adaptation();\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "name")
+  lprintf out "} else if (!(%s) && (active_adaptation == %s_key)) end_adaptation();\n" guard_str (ExtXml.attrib block_elem "name")
 
 let print_adaptation_variable_body = fun out local_global_adaptations adaptation_name->
   let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in    
   if (compare  (ExtXml.attrib block_elem "value") "waypoint_set_here()" = 0) then
-    lprintf out "if (%s) waypoint_set_here(%s);\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var")
+    let guard_str = Str.global_replace (Str.regexp "@LT") " < " (ExtXml.attrib block_elem "guard") in
+    lprintf out "if (%s) waypoint_set_here(%s);\n" guard_str (ExtXml.attrib block_elem "var")
   else
     lprintf out "if (%s) %s = %s;\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "value")
 
 let print_adaptation_variable_max = fun out local_global_adaptations adaptation_name->
   let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in    
   try
-    lprintf out "if (%s && %s > %s) %s = %s;\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "max") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "max")
+    let guard_str = Str.global_replace (Str.regexp "@LT") " < " (ExtXml.attrib block_elem "guard") in
+    lprintf out "if (%s && %s > %s) %s = %s;\n" guard_str (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "max") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "max")
   with
     ExtXml.Error _ -> lprintf out ""
 
 let print_adaptation_variable_min = fun out local_global_adaptations adaptation_name->
   let block_elem = List.find (fun s -> (compare (ExtXml.attrib s "name") adaptation_name) == 0) local_global_adaptations in    
   try
-    lprintf out "if (%s && %s < %s) %s = %s;\n" (ExtXml.attrib block_elem "guard") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "min") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "min")
+    let guard_str = Str.global_replace (Str.regexp "@LT") " < " (ExtXml.attrib block_elem "guard") in
+    lprintf out "if (%s && %s < %s) %s = %s;\n" guard_str (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "min") (ExtXml.attrib block_elem "var") (ExtXml.attrib block_elem "min")
   with
     ExtXml.Error _ -> lprintf out ""
 
@@ -1106,7 +1113,7 @@ let print_adaptations_variables = fun out index_of_waypoints (b:Xml.xml) block_n
   let local_global_adaptative_variables,_ = List.partition (fun x -> has_var_attrib x) (local_global_adaptations) in
   let adaptations =  ExtXml.attrib b "adaptations" in
   let adaptations = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptations in
-  let adaptations_names_dup = Str.split (Str.regexp "\\(,\\|<\\)") adaptations in
+  let adaptations_names_dup = Str.split (Str.regexp "\\(,\\|@LT\\)") adaptations in
   let adaptations_names = uniq adaptations_names_dup in
   let adaptive_var_names, _ = List.partition(fun x -> is_adaptation_name_var local_global_adaptative_variables x) adaptations_names in
   List.iter (print_adaptation_variable out local_global_adaptative_variables) adaptive_var_names
@@ -1128,7 +1135,7 @@ let print_adaptations_blocks = fun out index_of_waypoints (b:Xml.xml) block_num 
   let adaptation_preemption_order =  ExtXml.attrib b "adaptations" in
   let adaptation_preemption_order = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptation_preemption_order in
   let adaptations = Str.global_replace (Str.regexp "[\r\n\t ]") "" adaptations in
-  let adaptations_names_dup = Str.split (Str.regexp "\\(,\\|<\\)") adaptations in
+  let adaptations_names_dup = Str.split (Str.regexp "\\(,\\|@LT\\)") adaptations in
   let adaptations_names = uniq adaptations_names_dup in
   let adaptive_block_names, _ = List.partition(fun x -> is_adaptation_name_block local_global_adaptative_blocks x) adaptations_names in
   List.iter (print_adaptation_block out index_of_waypoints b block_num local_global_adaptative_blocks adaptation_preemption_order) adaptive_block_names

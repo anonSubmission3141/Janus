@@ -1,0 +1,9 @@
+Janus:
+	Lines: 25
+	Vertices: 14
+	Edges: 13
+
+C:
+	Lines: 184
+	Vertices: 358
+	Edges: 443

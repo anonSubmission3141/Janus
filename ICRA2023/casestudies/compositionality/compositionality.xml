@@ -1,0 +1,49 @@
+<!DOCTYPE flight_plan SYSTEM "flight_plan.dtd">
+<flight_plan alt="260" ground_alt="185" lat0="43.46223" lon0="1.27289" max_dist_from_home="10000" name="Basic" security_height="25">
+  <waypoints>
+    <waypoint name="HOME" x="0" y="0"/>
+    <waypoint name="p1" x="-50" y="100"/>
+    <waypoint name="p2" x="-50" y="-100"/>
+    <waypoint name="TRACK" x="0" y="0"/>
+    <waypoint name="sz1" x="500" y="500"/>
+    <waypoint name="sz2" x="500" y="-500"/>
+    <waypoint name="sz3" x="-500" y="-500"/>
+    <waypoint name="sz4" x="500" y="500"/>
+  </waypoints>
+  <sectors>
+    <sector name="SafeZone">
+      <corner name="sz1"/>
+      <corner name="sz2"/>
+      <corner name="sz3"/>
+      <corner name="sz4"/>
+    </sector>
+  </sectors>
+  <variables>
+    <variable var="abvGroundAlt" init="0"/>
+  </variables>
+  <blocks>
+    <block name="Takeoff">
+      <call_once fun="NavKillThrottle()"/>
+      <while cond="!GpsFixValid()"/>
+      <call_once fun="NavSetGroundReferenceHere()"/>
+      <while cond="LessThan(NavBlockTime(), 10)"/>
+      <call_once fun="NavResurrect()"/>
+      <stay vmode="climb" climb="0.5" wp="HOME"/>
+    </block>
+<adaptation name="SignalTrack" guard="datalink_time @LT 0.25" value="waypoint_set_here()" var="WP_TRACK"/>
+<adaptation name="AbvGroundAlt" var="abvGroundAlt" guard="datalink_time > 10" value="abvGroundAlt + 0.1" min="GetAltRef() + 2" max="GetAltRef() + 15"/>
+<adaptation name="GpsInvalid" guard="!GpsFixValid()">
+  <attitude roll="0" vmode="climb" climb="nav_descend_vspeed"/>
+</adaptation>
+<adaptation name="SafeZone" guard="!InsideSafeZone(GetPosX(), GetPosY())">
+  <go wp="HOME"/>
+</adaptation>
+<adaptation name="ReturnToTrackAndAscend" guard="datalink_time > 5">
+  <stay wp="TRACK" vmode="alt" alt="abvGroundAlt" until="datalink_time > 10"/>
+  <stay wp="TRACK" vmode="alt" alt="GetAltRef()"/>
+</adaptation>
+<block name="singal_adaptive_path" adaptations="AbvGroundAlt, ReturnToTrackAndAscend @LT GpsInvlaid, SafeZone @LT SignalTrack">
+  <path wpts= "p1, p2" vmode="alt" alt="abvGroundAlt"/>
+</block>
+  </blocks>
+</flight_plan>

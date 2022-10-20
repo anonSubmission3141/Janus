@@ -1,9 +1,0 @@
-Janus:
-	Lines: 37
-	Nodes: 16
-	Edges: 18
-
-C:
-	Lines: 260
-	Nodes: 350
-	Edges: 448

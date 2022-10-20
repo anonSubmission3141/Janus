@@ -59,4 +59,18 @@ void nav_goto_block(uint8_t block_id);
 /** Time in s since the entrance in the current block */
 #define NavBlockTime() (block_time)
 
+
+extern int8_t past_adaptation_index, active_adaptation, active_adaptation_stage;
+extern uint8_t past_adaptations[100];
+extern uint8_t past_adaptations_stages[100];
+
+extern void preempt_adaptation(int future);
+extern void end_adaptation();
+
+#define InitAdaptiveStage() nav_init_adaptive_stage();
+#define AdaptationStage(s) case s: active_adaptation_stage=s;
+#define NextAdaptationStage() {active_adaptation_stage++;} INTENTIONAL_FALLTHRU
+#define NextAdaptationStageAndBreak() { active_adaptation_stage++; break; }
+#define NextAdaptationStageAndBreakFrom(wp) { last_wp = wp; NextAdaptationStageAndBreak(); }
+
 #endif /* COMMON_FLIGHT_PLAN_H */

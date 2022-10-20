@@ -1,0 +1,35 @@
+<!DOCTYPE flight_plan SYSTEM "flight_plan.dtd">
+<!-- A simple flightplan for automated SITL/HITL verification: it launches and lands itself, giving us an idea whether a given airframe
+     can finish it -->
+<flight_plan alt="260" ground_alt="185" lat0="43.46223" lon0="1.27289" max_dist_from_home="10000" name="Basic" security_height="25">
+  <header>
+#include "subsystems/datalink/datalink.h"
+#include "state.h"
+</header>
+  <waypoints>
+    <waypoint name="HOME" x="0" y="0"/>
+    <waypoint name="p1" x="-50" y="100"/>
+    <waypoint name="p2" x="-50" y="-100"/>
+    <waypoint name="TRACK" x="0" y="0"/>
+  </waypoints>
+  <variables>
+    <variable var="abvGroundAlt" init="0"/>
+  </variables>
+  <blocks>
+    <block name="Takeoff" strip_button="Takeoff" strip_icon="takeoff.png">
+      <call_once fun="NavKillThrottle()"/>
+      <while cond="!GpsFixValid()"/>
+      <while cond="LessThan(NavBlockTime(), 10)"/>
+      <call_once fun="NavSetGroundReferenceHere()"/>
+      <call_once fun="NavResurrect()"/>
+      <call_once fun="NavSetWaypointHere(WP_HOME)"/>
+      <stay vmode="climb" climb="0.5" wp="HOME" until="GetPosHeight() @GT 2.0"/>
+    </block>
+<adaptation name="Off_Track" guard="!on_top_of_landing_pad()">
+    <stay wp="LANDING_PAD" vmode="climb" climb="nav_ascend_vspeed"/>
+</adaptation>
+<block name="Guided_Landing" adaptations="Off_Track">
+    <stay wp="LANDING_PAD" vmode="climb" climb="nav_descend_vspeed" until="!nav_is_in_flight()"/>
+</block>
+  </blocks>
+</flight_plan>
